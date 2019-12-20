@@ -131,6 +131,8 @@ public class Tracker {
     private boolean applicationContext;
     private ScreenState screenState;
 
+    private ErrorLogging errorLogger;
+
     private AtomicBoolean dataCollection = new AtomicBoolean(true);
 
     /**
@@ -164,17 +166,20 @@ public class Tracker {
         boolean installTracking = false; // Optional
         boolean applicationContext = false; // Optional
 
+        final ErrorLogging errorLogger;
+
         /**
          * @param emitter Emitter to which events will be sent
          * @param namespace Identifier for the Tracker instance
          * @param appId Application ID
          * @param context The Android application context
          */
-        public TrackerBuilder(Emitter emitter, String namespace, String appId, Context context) {
+        public TrackerBuilder(Emitter emitter, String namespace, String appId, Context context, ErrorLogging errorLogger) {
             this.emitter = emitter;
             this.namespace = namespace;
             this.appId = appId;
             this.context = context;
+            this.errorLogger = errorLogger;
         }
 
         /**
@@ -421,6 +426,8 @@ public class Tracker {
         this.installTracking = builder.installTracking;
         this.applicationContext = builder.applicationContext;
 
+        this.errorLogger = builder.errorLogger;
+
         if (this.installTracking) {
             this.installTracker = new InstallTracker(this.context);
         } else {
@@ -435,6 +442,7 @@ public class Tracker {
                         builder.backgroundTimeout,
                         builder.timeUnit,
                         builder.context,
+                        builder.errorLogger,
                         builder.sessionCallbacks[0],
                         builder.sessionCallbacks[1],
                         builder.sessionCallbacks[2],
@@ -445,7 +453,8 @@ public class Tracker {
                         builder.foregroundTimeout,
                         builder.backgroundTimeout,
                         builder.timeUnit,
-                        builder.context
+                        builder.context,
+                        builder.errorLogger
                 );
             }
 
@@ -618,8 +627,18 @@ public class Tracker {
                                                List<SelfDescribingJson> contexts, String eventId) {
 
         // Add session context
-        if (this.sessionContext && this.trackerSession.getHasLoadedFromFile()) {
-            contexts.add(this.trackerSession.getSessionContext(eventId));
+        if (sessionContext) {
+            if (trackerSession.getHasLoadedFromFile()) {
+                synchronized (trackerSession) {
+                    SelfDescribingJson sessionContextJson = trackerSession.getSessionContext(eventId);
+                    if (true) { // $$$ sessionContextJson == null) {
+                        errorLogger.log(TAG, "getSessionContext method returned null with eventId: " + eventId, null);
+                    }
+                    contexts.add(sessionContextJson);
+                }
+            } else {
+                errorLogger.log(TAG, "getHasLoadedFromFile method returned false with eventId: " + eventId, null);
+            }
         }
 
         // Add Geo-Location Context
@@ -699,7 +718,11 @@ public class Tracker {
             sessionExecutor.scheduleAtFixedRate(new Runnable() {
                 @Override
                 public void run() {
-                    session.checkAndUpdateSession();
+                    try {
+                        session.checkAndUpdateSession();
+                    } catch (Exception e) {
+                        errorLogger.log(TAG, "checkAndUpdateSession thrown an exception: " + e.getMessage(), e);
+                    }
                 }
             }, this.sessionCheckInterval, this.sessionCheckInterval, this.timeUnit);
         }

@@ -17,7 +17,6 @@ import android.content.Context;
 
 import com.snowplowanalytics.snowplow.tracker.constants.Parameters;
 import com.snowplowanalytics.snowplow.tracker.constants.TrackerConstants;
-import com.snowplowanalytics.snowplow.tracker.storage.EventStore;
 import com.snowplowanalytics.snowplow.tracker.utils.Logger;
 import com.snowplowanalytics.snowplow.tracker.utils.Util;
 import com.snowplowanalytics.snowplow.tracker.utils.FileStore;
@@ -31,6 +30,7 @@ import java.util.concurrent.Future;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicLong;
 
 /**
  * A Session object which gets appended to each
@@ -48,6 +48,8 @@ import java.util.concurrent.atomic.AtomicBoolean;
 public class Session {
 
     private static String TAG = Session.class.getSimpleName();
+
+    private final ErrorLogging errorLogger;
 
     // Session Variables
     private String userId;
@@ -86,30 +88,37 @@ public class Session {
      * @param timeUnit the time units of the timeout measurements
      * @param context the android context
      */
-    public Session(long foregroundTimeout, long backgroundTimeout, TimeUnit timeUnit, Context context) {
+    public Session(long foregroundTimeout, long backgroundTimeout, TimeUnit timeUnit, Context context, ErrorLogging logger) {
         this.foregroundTimeout = timeUnit.toMillis(foregroundTimeout);
         this.backgroundTimeout = timeUnit.toMillis(backgroundTimeout);
         this.context = context;
+        this.errorLogger = logger;
 
         this.loadFromFileFuture = Executor.futureCallable(new Callable<Void>() {
             @Override
             public Void call() {
                 Map sessionInfo = getSessionFromFile();
+                String id;
                 if (sessionInfo == null) {
-                    userId = Util.getEventId();
+                    id = Util.getEventId();
                 } else {
                     try {
                         String uid = sessionInfo.get(Parameters.SESSION_USER_ID).toString();
                         String sid = sessionInfo.get(Parameters.SESSION_ID).toString();
                         int si = (int) sessionInfo.get(Parameters.SESSION_INDEX);
 
-                        userId = uid;
+                        id = uid;
                         sessionIndex = si;
                         currentSessionId = sid;
                     } catch (Exception e){
-                        Logger.e(TAG, "Exception occurred retrieving session info from file: %s", e.getMessage());
-                        userId = Util.getEventId();
+                        String msg = "Exception occurred retrieving session info from file: " + e.getMessage();
+                        Logger.e(TAG, msg);
+                        errorLogger.log(TAG, msg, e);
+                        id = Util.getEventId();
                     }
+                }
+                synchronized (this) {
+                    userId = id;
                 }
                 hasLoadedFromFile.set(true);
                 updateSessionInfo();
@@ -123,11 +132,12 @@ public class Session {
 
     public Session(long foregroundTimeout, long backgroundTimeout, TimeUnit timeUnit,
                    Context context,
+                   ErrorLogging errorLogger,
                    Runnable foregroundTransitionCallback,
                    Runnable backgroundTransitionCallback,
                    Runnable foregroundTimeoutCallback,
                    Runnable backgroundTimeoutCallback) {
-        this(foregroundTimeout, backgroundTimeout, timeUnit, context);
+        this(foregroundTimeout, backgroundTimeout, timeUnit, context, errorLogger);
         this.foregroundTransitionCallback = foregroundTransitionCallback;
         this.backgroundTransitionCallback = backgroundTransitionCallback;
         this.foregroundTimeoutCallback = foregroundTimeoutCallback;
@@ -232,7 +242,9 @@ public class Session {
             try {
                 Tracker.instance().resumeSessionChecking();
             } catch (Exception e) {
-                Logger.e(TAG, "Could not resume checking as tracker not setup");
+                String msg = "Could not resume checking as tracker not setup";
+                Logger.e(TAG, msg);
+                errorLogger.log(TAG, msg, e);
             }
         }
 
@@ -423,5 +435,7 @@ public class Session {
     /**
      * @return future for session file loading
      */
-    public Future getLoadFromFileFuture() { return this.loadFromFileFuture; }
+    public Future getLoadFromFileFuture() {
+        return this.loadFromFileFuture;
+    }
 }
